@@ -1,0 +1,54 @@
+{
+	"name": "vf-clamp",
+	"displayName": "vf-clamp",
+	"description": "Generate restricted variable fonts from named instance ranges",
+	"version": "0.1.0",
+	"publisher": "liiift-studio",
+	"engines": {
+		"vscode": "^1.85.0"
+	},
+	"categories": ["Other"],
+	"keywords": ["font", "variable font", "typography", "type foundry"],
+	"activationEvents": [],
+	"main": "./dist/extension.js",
+	"contributes": {
+		"commands": [
+			{
+				"command": "vf-clamp.openPanel",
+				"title": "vf-clamp: Generate Restricted Variable Fonts"
+			},
+			{
+				"command": "vf-clamp.openFile",
+				"title": "vf-clamp: Open Font File"
+			}
+		],
+		"menus": {
+			"explorer/context": [
+				{
+					"command": "vf-clamp.openFile",
+					"when": "resourceExtname == .ttf || resourceExtname == .otf",
+					"group": "navigation"
+				}
+			]
+		}
+	},
+	"scripts": {
+		"vscode:prepublish": "npm run compile",
+		"compile": "tsc -p ./",
+		"watch": "tsc -watch -p ./",
+		"lint": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@liiift-studio/vf-clamp": "^2.0.1"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"@types/vscode": "^1.85.0",
+		"typescript": "^5.0.0"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Liiift-Studio/vf-clamp-vscode.git"
+	},
+	"license": "MIT"
+}
