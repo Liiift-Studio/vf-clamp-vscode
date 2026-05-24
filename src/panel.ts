@@ -157,7 +157,7 @@ export class VFClampPanel {
 			canSelectFiles: true,
 			canSelectFolders: false,
 			canSelectMany: false,
-			filters: { 'Font files': ['ttf', 'otf'] },
+			filters: { 'Font files': ['ttf', 'otf', 'woff', 'woff2'] },
 			openLabel: 'Select Font',
 		})
 		if (uris && uris[0]) {
@@ -190,10 +190,16 @@ export class VFClampPanel {
 
 			this._panel.webview.postMessage({ type: 'progress', message: 'Processing font…' })
 
-			const results = await clampFont(buffer, {
-				outputs: msg.outputs,
-				format: msg.format,
-			})
+			const CLAMP_TIMEOUT_MS = 120_000
+			const results = await Promise.race([
+				clampFont(buffer, { outputs: msg.outputs, format: msg.format }),
+				new Promise<never>((_, reject) =>
+					setTimeout(
+						() => reject(new Error('Processing timed out after 2 minutes. Try a smaller font or fewer outputs.')),
+						CLAMP_TIMEOUT_MS,
+					)
+				),
+			])
 
 			// Ensure output directory exists before writing
 			await mkdir(msg.outputDir, { recursive: true })
@@ -220,7 +226,7 @@ export class VFClampPanel {
 		const webview = this._panel.webview
 		const csp = [
 			`default-src 'none'`,
-			`style-src ${webview.cspSource} 'unsafe-inline'`,
+			`style-src ${webview.cspSource} 'nonce-${nonce}'`,
 			`script-src 'nonce-${nonce}'`,
 		].join('; ')
 		return /* html */`<!DOCTYPE html>
@@ -230,7 +236,7 @@ export class VFClampPanel {
 	<meta http-equiv="Content-Security-Policy" content="${csp}" />
 	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 	<title>vf-clamp</title>
-	<style>
+	<style nonce="${nonce}">
 		*, *::before, *::after { box-sizing: border-box; }
 
 		body {
@@ -427,6 +433,8 @@ export class VFClampPanel {
 			background: var(--vscode-inputValidation-errorBackground, transparent);
 		}
 
+		.mb-section { margin-bottom: 14px; }
+
 		.generate-btn {
 			width: 100%;
 			padding: 8px 12px;
@@ -485,11 +493,11 @@ export class VFClampPanel {
 	<!-- Output section -->
 	<section id="section-output">
 		<hr />
-		<div style="margin-bottom:14px">
+		<div class="mb-section">
 			<span class="label">Output Name</span>
 			<input type="text" id="output-name" placeholder="e.g. Typeface-Light-Bold" />
 		</div>
-		<div style="margin-bottom:14px">
+		<div class="mb-section">
 			<span class="label">Format</span>
 			<select id="output-format">
 				<option value="ttf">TTF</option>
@@ -498,7 +506,7 @@ export class VFClampPanel {
 				<option value="woff2">WOFF2</option>
 			</select>
 		</div>
-		<div style="margin-bottom:14px">
+		<div class="mb-section">
 			<span class="label">Output Folder</span>
 			<div class="output-dir-row">
 				<div class="output-dir-path" id="output-dir-display">No folder selected</div>
