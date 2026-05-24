@@ -26,7 +26,7 @@
 			"explorer/context": [
 				{
 					"command": "vf-clamp.openFile",
-					"when": "resourceExtname == .ttf || resourceExtname == .otf",
+					"when": "resourceExtname == '.ttf' || resourceExtname == '.otf'",
 					"group": "navigation"
 				}
 			]

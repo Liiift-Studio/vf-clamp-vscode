@@ -1,7 +1,8 @@
 // src/panel.ts — WebviewPanel class for vf-clamp; handles all font processing in the extension host
 import * as vscode from 'vscode'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, basename } from 'node:path'
+import { randomBytes } from 'node:crypto'
 
 // ─── Types mirrored from @liiift-studio/vf-clamp public API ──────────────────
 
@@ -194,6 +195,9 @@ export class VFClampPanel {
 				format: msg.format,
 			})
 
+			// Ensure output directory exists before writing
+			await mkdir(msg.outputDir, { recursive: true })
+
 			const written: string[] = []
 			for (const result of results) {
 				const ext = EXT[result.format as FontFormat] ?? result.format
@@ -211,7 +215,14 @@ export class VFClampPanel {
 
 	/** Build and return the full HTML for the webview. */
 	private _getHtml(): string {
-		const csp = `default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline';`
+		// Generate a fresh nonce for each HTML load — required for a safe script-src CSP
+		const nonce = randomBytes(16).toString('base64')
+		const webview = this._panel.webview
+		const csp = [
+			`default-src 'none'`,
+			`style-src ${webview.cspSource} 'unsafe-inline'`,
+			`script-src 'nonce-${nonce}'`,
+		].join('; ')
 		return /* html */`<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -498,7 +509,7 @@ export class VFClampPanel {
 		<div class="status info" id="status"></div>
 	</section>
 
-	<script>
+	<script nonce="${nonce}">
 		// ─── VS Code API ──────────────────────────────────────────────────────
 		const vscode = acquireVsCodeApi()
 
@@ -699,23 +710,35 @@ export class VFClampPanel {
 					currentInstances = msg.instances
 					fontPathDisplay.textContent = msg.name || msg.path
 
-					// Axes summary
-					if (msg.axes && msg.axes.length > 0) {
-						axesSummary.innerHTML = msg.axes.map(ax =>
-							'<span><b>' + ax.tag + '</b> ' +
-							ax.minimum + '–' + ax.maximum +
-							(ax.name ? ' (' + ax.name + ')' : '') +
-							'</span>'
-						).join('')
-					} else {
+					// Detect static fonts (no axes) — show warning and hide output controls
+					const isVariable = msg.axes && msg.axes.length > 0
+					if (!isVariable) {
 						axesSummary.textContent = ''
+						instanceList.innerHTML = '<div class="empty-state">Not a variable font — no axes found.</div>'
+						sectionInstances.style.display = 'block'
+						sectionOutput.style.display = 'none'
+						setStatus('This font has no variable axes. Select a variable font (.ttf/.otf).', 'error')
+						break
 					}
+
+					// Axes summary
+					axesSummary.innerHTML = msg.axes.map(ax =>
+						'<span><b>' + ax.tag + '</b> ' +
+						ax.minimum + '–' + ax.maximum +
+						(ax.name ? ' (' + ax.name + ')' : '') +
+						'</span>'
+					).join('')
 
 					renderInstances(msg.instances)
 					sectionInstances.style.display = 'block'
 					sectionOutput.style.display = 'block'
 					setStatus('', 'info')
 					updateGenerateButton()
+					break
+				}
+
+				case 'filePicked': {
+					// Font load follows automatically from the host — nothing to do in the webview
 					break
 				}
 
