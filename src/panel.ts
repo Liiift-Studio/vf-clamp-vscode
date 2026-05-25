@@ -549,6 +549,8 @@ export class VFClampPanel {
 		/**
 		 * Generate a compact name from first and last selected instance names.
 		 * Strips shared prefix/suffix tokens and joins with a dash.
+		 * Canonical implementation: @liiift-studio/vf-clamp src/core/utils.ts compactName()
+		 * This copy runs in the sandboxed webview iframe and cannot import the npm package.
 		 * @param {string} first
 		 * @param {string} last
 		 * @returns {string}
