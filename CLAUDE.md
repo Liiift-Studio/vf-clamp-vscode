@@ -30,10 +30,21 @@ Opens a panel with an interactive UI — select a font file, choose instances, c
 
 | File | Purpose |
 |------|---------|
-| `src/extension.ts` | Extension entry, command registration |
+| `src/extension.ts` | Extension entry, command registration, panel serializer |
 | `src/panel.ts` | WebviewPanel class, message handling, clampFont calls |
-
-The webview HTML is inlined as a template literal inside `panel.ts` (`_getHtml()` method) — there is no separate `webview.html` file.
+| `src/shared/messages.ts` | Discriminated-union message contract + runtime validation shared by host and webview |
+| `src/security.ts` | Path-safety helpers (output name validation, root containment, error sanitisation) |
+| `src/util.ts` | `compactName` and `safeId` host-side helpers |
+| `media/webview.html` | Webview shell (loaded at runtime via `webview.asWebviewUri`) |
+| `media/webview.css` | Webview styles |
+| `media/webview.js` | Webview UI logic (sandboxed iframe code) |
+| `media/icon.png` | Marketplace icon |
+| `package.json` | Manifest: commands, menus, configuration schema, capabilities, scripts, devDeps |
+| `tsconfig.json` | Compiler config — `module: Node16` so dynamic `import()` is preserved |
+| `tsconfig.test.json` | Compiles tests into `dist/test/` for `@vscode/test-electron` |
+| `esbuild.mjs` | Bundles host code into a single `dist/extension.js` so node_modules can stay out of the VSIX |
+| `.vscodeignore` | Excludes everything from the VSIX except `dist/` and `media/` |
+| `CHANGELOG.md` | Marketplace-rendered changelog |
 
 ## Message Protocol (webview ↔ host)
 

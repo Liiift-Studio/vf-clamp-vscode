@@ -1,144 +1,218 @@
-// src/panel.ts — WebviewPanel class for vf-clamp; handles all font processing in the extension host
+// src/panel.ts — WebviewPanel class for vf-clamp; handles all font processing in the extension host.
 import * as vscode from 'vscode'
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
-import { join, basename } from 'node:path'
+import { readFile, writeFile, mkdir, stat } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { join, basename, resolve, dirname } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
-// ─── Types mirrored from @liiift-studio/vf-clamp public API ──────────────────
+import {
+	type IncomingMessage,
+	type OutgoingMessage,
+	type GenerateMsg,
+	type FontFormat,
+	type AxisInfo,
+	type InstanceInfo,
+	FORMAT_EXT,
+	isIncomingMessage,
+} from './shared/messages.js'
+import { compactName } from './util.js'
+import { validateOutputName, resolveWithinRoot, sanitizeErrorMessage, safeBasename } from './security.js'
+import { getOutputChannel } from './extension.js'
 
-/** A single variable font axis descriptor. */
-interface AxisInfo {
-	tag: string
-	name: string
-	minimum: number
-	default: number
-	maximum: number
+/** Shape of the @liiift-studio/vf-clamp ESM module we depend on. */
+interface VfClampModule {
+	getInstances(buf: Buffer): Promise<{ axes: AxisInfo[]; instances: InstanceInfo[] }>
+	clampFont(
+		buf: Buffer,
+		opts: { outputs: Array<{ name: string; instances: string[] }>; format: FontFormat },
+	): Promise<Array<{ name: string; format: string; buffer: Buffer }>>
 }
 
-/** A named instance within the font. */
-interface InstanceInfo {
-	name: string
-	coordinates: Record<string, number>
+// Hoisted memoised promise so Pyodide + vf-clamp module load only once per host lifetime.
+let vfClampPromise: Promise<VfClampModule> | null = null
+
+/** Lazily load and cache the @liiift-studio/vf-clamp ESM module. */
+function loadVfClamp(): Promise<VfClampModule> {
+	if (!vfClampPromise) {
+		// Use Function('return import(...)') so esbuild/tsc does not downlevel to require().
+		vfClampPromise = (new Function(
+			'p',
+			'return import(p)',
+		)('@liiift-studio/vf-clamp') as Promise<VfClampModule>)
+		.catch(err => {
+			vfClampPromise = null
+			throw err
+		})
+	}
+	return vfClampPromise
 }
 
-/** One output slot sent from the webview to the extension host. */
-interface OutputSpec {
-	name: string
-	instances: string[]
+/** Cached font buffer keyed by absolute path + mtime so we do not re-read on every generate. */
+interface BufferCacheEntry {
+	path: string
+	mtimeMs: number
+	buffer: Buffer
 }
 
-/** Supported output font formats. */
-type FontFormat = 'ttf' | 'otf' | 'woff' | 'woff2'
-
-// ─── Message shapes (webview → host) ─────────────────────────────────────────
-
-interface LoadFontMsg { type: 'loadFont'; path: string }
-interface PickFileMsg { type: 'pickFile' }
-interface PickOutputDirMsg { type: 'pickOutputDir' }
-interface GenerateMsg {
-	type: 'generate'
-	fontPath: string
-	outputs: OutputSpec[]
-	format: FontFormat
-	outputDir: string
-}
-
-type IncomingMessage = LoadFontMsg | PickFileMsg | PickOutputDirMsg | GenerateMsg
-
-// ─── File extension map ───────────────────────────────────────────────────────
-
-/** Map from format string to file extension. */
-const EXT: Record<FontFormat, string> = {
-	ttf: 'ttf',
-	otf: 'otf',
-	woff: 'woff',
-	woff2: 'woff2',
-}
-
-// ─── VFClampPanel ─────────────────────────────────────────────────────────────
-
-/** Manages a single webview panel for the vf-clamp UI. */
+/** Manages the vf-clamp webview panel. */
 export class VFClampPanel {
-	/** The single active panel instance (singleton per editor column). */
+	/** The single active panel instance. */
 	public static currentPanel: VFClampPanel | undefined
+
+	/** ViewType used for createWebviewPanel + serializer registration. */
+	public static readonly viewType = 'vfClamp'
 
 	private readonly _panel: vscode.WebviewPanel
 	private readonly _extensionUri: vscode.Uri
 	private _disposables: vscode.Disposable[] = []
+	private _disposed = false
+	private _bufferCache: BufferCacheEntry | null = null
+	private _lastPickedOutputDir: string | null = null
+	private _cancelSource: vscode.CancellationTokenSource | null = null
 
 	/** Create or reveal the panel. If fontPath is supplied, pre-load that font. */
 	public static createOrShow(extensionUri: vscode.Uri, fontPath?: string): void {
-		const column = vscode.window.activeTextEditor
-			? vscode.window.activeTextEditor.viewColumn
-			: undefined
+		const column = vscode.window.activeTextEditor?.viewColumn
 
 		if (VFClampPanel.currentPanel) {
-			VFClampPanel.currentPanel._panel.reveal(column)
+			// Preserve the user's panel column instead of jumping to the active editor's.
+			VFClampPanel.currentPanel._panel.reveal(undefined, true)
 			if (fontPath) {
-				VFClampPanel.currentPanel._loadFont(fontPath)
+				void VFClampPanel.currentPanel._maybeReplaceFont(fontPath)
 			}
 			return
 		}
 
 		const panel = vscode.window.createWebviewPanel(
-			'vfClamp',
+			VFClampPanel.viewType,
 			'vf-clamp',
 			column ?? vscode.ViewColumn.One,
 			{
 				enableScripts: true,
-				localResourceRoots: [extensionUri],
-				retainContextWhenHidden: true,
+				// Scope local resources to the bundled media/ folder only.
+				localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')],
+				retainContextWhenHidden: false,
 			},
 		)
 
 		VFClampPanel.currentPanel = new VFClampPanel(panel, extensionUri)
 
-		if (fontPath) {
-			VFClampPanel.currentPanel._loadFont(fontPath)
-		}
+		if (fontPath) void VFClampPanel.currentPanel._loadFont(fontPath)
+	}
+
+	/** Recreate the panel during VS Code's webview deserialization on reload. */
+	public static revive(panel: vscode.WebviewPanel, extensionUri: vscode.Uri): void {
+		VFClampPanel.currentPanel = new VFClampPanel(panel, extensionUri)
 	}
 
 	private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
 		this._panel = panel
 		this._extensionUri = extensionUri
-
+		this._panel.webview.options = {
+			enableScripts: true,
+			localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')],
+		}
 		this._panel.webview.html = this._getHtml()
 
 		this._panel.onDidDispose(() => this.dispose(), null, this._disposables)
-
 		this._panel.webview.onDidReceiveMessage(
-			(message: IncomingMessage) => this._handleMessage(message),
+			(raw: unknown) => this._handleMessage(raw),
 			null,
 			this._disposables,
 		)
 	}
 
-	/** Route incoming messages from the webview to the appropriate handler. */
-	private async _handleMessage(message: IncomingMessage): Promise<void> {
+	/** Trigger the panel's file-picker flow (used when openFile is invoked without a Uri). */
+	public triggerPickFile(): void {
+		void this._pickFile()
+	}
+
+	/** Update the panel title to include the active font basename. */
+	private _setTitleForFont(fontPath: string): void {
+		this._panel.title = `vf-clamp · ${safeBasename(fontPath)}`
+	}
+
+	/** Validate and route incoming webview messages. */
+	private async _handleMessage(raw: unknown): Promise<void> {
+		if (!isIncomingMessage(raw)) {
+			getOutputChannel().appendLine(`[warn] Rejected malformed webview message: ${JSON.stringify(raw).slice(0, 200)}`)
+			return
+		}
+		const message: IncomingMessage = raw
 		switch (message.type) {
 			case 'loadFont':
+				// Only allow loading paths that were previously picked through the OS dialog,
+				// or that came from the explorer/context command (recorded as last picked).
+				if (!this._isAllowedLoadPath(message.path)) {
+					this._postError('Refusing to load a path that was not picked by the file dialog.')
+					return
+				}
 				await this._loadFont(message.path)
-				break
+				return
 			case 'pickFile':
 				await this._pickFile()
-				break
+				return
 			case 'pickOutputDir':
 				await this._pickOutputDir()
-				break
+				return
 			case 'generate':
 				await this._generate(message)
-				break
+				return
+			case 'cancel':
+				this._cancelSource?.cancel()
+				return
+			case 'suggestName':
+				this._postMessage({ type: 'nameSuggested', name: compactName(message.first, message.last) })
+				return
+			default: {
+				// Exhaustiveness check — any new message variant must be handled above.
+				const _exhaustive: never = message
+				void _exhaustive
+				return
+			}
 		}
 	}
 
-	/** Load a font file and send axis/instance data to the webview. */
+	/** Track paths that the user explicitly picked (or were passed in via createOrShow). */
+	private _allowedFontPaths = new Set<string>()
+
+	/** Record a font path so the webview can later request it via loadFont. */
+	private _allowPath(p: string): void {
+		this._allowedFontPaths.add(resolve(p))
+	}
+
+	private _isAllowedLoadPath(p: string): boolean {
+		try { return this._allowedFontPaths.has(resolve(p)) } catch { return false }
+	}
+
+	/** Pre-load a font on behalf of the user (called by createOrShow). */
 	private async _loadFont(fontPath: string): Promise<void> {
+		this._allowPath(fontPath)
+
+		// Trust check — refuse to read files in an untrusted workspace.
+		if (!vscode.workspace.isTrusted) {
+			this._postError('Workspace is not trusted. Trust the workspace before processing fonts.')
+			vscode.window.showWarningMessage(
+				'vf-clamp: workspace is not trusted. Click "Manage Workspace Trust" to enable font processing.',
+			)
+			return
+		}
+
+		const config = vscode.workspace.getConfiguration('vf-clamp')
+		const maxSize = config.get<number>('maxFontSizeBytes', 200 * 1024 * 1024)
+
 		try {
+			const st = await stat(fontPath)
+			if (!st.isFile()) throw new Error('Selected path is not a file.')
+			if (st.size > maxSize) throw new Error(`Font file is too large (${st.size} bytes; limit ${maxSize}).`)
+
 			const buffer = await readFile(fontPath)
-			// Dynamic import required: @liiift-studio/vf-clamp is ESM, extension host is CommonJS
-			const { getInstances } = await import('@liiift-studio/vf-clamp')
-			const { axes, instances } = await getInstances(buffer)
-			this._panel.webview.postMessage({
+			this._bufferCache = { path: resolve(fontPath), mtimeMs: st.mtimeMs, buffer }
+
+			const vfClamp = await loadVfClamp()
+			const { axes, instances } = await vfClamp.getInstances(buffer)
+			this._setTitleForFont(fontPath)
+			this._postMessage({
 				type: 'fontLoaded',
 				axes,
 				instances,
@@ -146,27 +220,45 @@ export class VFClampPanel {
 				name: basename(fontPath),
 			})
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err)
-			this._panel.webview.postMessage({ type: 'error', message })
+			const message = sanitizeErrorMessage(err)
+			this._postError(message)
+			vscode.window.showErrorMessage(`vf-clamp: failed to load font (${message}).`)
+			getOutputChannel().appendLine(`[error] loadFont: ${err instanceof Error ? err.stack : String(err)}`)
 		}
 	}
 
-	/** Show a file picker and send the selected path to the webview. */
+	/** Prompt the user before replacing the currently loaded font. */
+	private async _maybeReplaceFont(newPath: string): Promise<void> {
+		const current = this._bufferCache?.path
+		if (!current || resolve(current) === resolve(newPath)) {
+			await this._loadFont(newPath)
+			return
+		}
+		const choice = await vscode.window.showWarningMessage(
+			`Replace ${safeBasename(current)} with ${safeBasename(newPath)}? Any in-progress selections will be lost.`,
+			{ modal: true },
+			'Replace', 'Cancel',
+		)
+		if (choice === 'Replace') await this._loadFont(newPath)
+	}
+
 	private async _pickFile(): Promise<void> {
 		const uris = await vscode.window.showOpenDialog({
 			canSelectFiles: true,
 			canSelectFolders: false,
 			canSelectMany: false,
-			filters: { 'Font files': ['ttf', 'otf', 'woff', 'woff2'] },
+			// Only the formats we can actually process as input.
+			filters: { 'Variable fonts': ['ttf', 'otf'] },
 			openLabel: 'Select Font',
 		})
-		if (uris && uris[0]) {
-			this._panel.webview.postMessage({ type: 'filePicked', path: uris[0].fsPath })
-			await this._loadFont(uris[0].fsPath)
+		const first = uris?.[0]
+		if (first) {
+			this._allowPath(first.fsPath)
+			this._postMessage({ type: 'filePicked', path: first.fsPath })
+			await this._loadFont(first.fsPath)
 		}
 	}
 
-	/** Show a folder picker and send the selected directory to the webview. */
 	private async _pickOutputDir(): Promise<void> {
 		const uris = await vscode.window.showOpenDialog({
 			canSelectFiles: false,
@@ -174,622 +266,221 @@ export class VFClampPanel {
 			canSelectMany: false,
 			openLabel: 'Select Output Folder',
 		})
-		if (uris && uris[0]) {
-			this._panel.webview.postMessage({ type: 'outputDirPicked', path: uris[0].fsPath })
+		const first = uris?.[0]
+		if (first) {
+			this._lastPickedOutputDir = resolve(first.fsPath)
+			this._postMessage({ type: 'outputDirPicked', path: first.fsPath })
 		}
 	}
 
-	/** Run clampFont and write output files to disk. */
 	private async _generate(msg: GenerateMsg): Promise<void> {
-		try {
-			this._panel.webview.postMessage({ type: 'progress', message: 'Warming up Pyodide… (~10s first run)' })
+		if (!vscode.workspace.isTrusted) {
+			this._postError('Workspace is not trusted.')
+			return
+		}
+		// Output directory must match the last picked folder — webview cannot widen scope.
+		const requestedOutputDir = resolve(msg.outputDir)
+		if (!this._lastPickedOutputDir || requestedOutputDir !== this._lastPickedOutputDir) {
+			this._postError('Output folder mismatch. Pick the output folder again.')
+			return
+		}
 
-			const buffer = await readFile(msg.fontPath)
-			// Dynamic import required: @liiift-studio/vf-clamp is ESM, extension host is CommonJS
-			const { clampFont } = await import('@liiift-studio/vf-clamp')
-
-			this._panel.webview.postMessage({ type: 'progress', message: 'Processing font…' })
-
-			const CLAMP_TIMEOUT_MS = 120_000
-			const results = await Promise.race([
-				clampFont(buffer, { outputs: msg.outputs, format: msg.format }),
-				new Promise<never>((_, reject) =>
-					setTimeout(
-						() => reject(new Error('Processing timed out after 2 minutes. Try a smaller font or fewer outputs.')),
-						CLAMP_TIMEOUT_MS,
-					)
-				),
-			])
-
-			// Ensure output directory exists before writing
-			await mkdir(msg.outputDir, { recursive: true })
-
-			const written: string[] = []
-			for (const result of results) {
-				const ext = EXT[result.format as FontFormat] ?? result.format
-				const outPath = join(msg.outputDir, `${result.name}.${ext}`)
-				await writeFile(outPath, result.buffer)
-				written.push(outPath)
+		// Validate every output name before doing any work.
+		const validated: Array<{ safeName: string; instances: string[] }> = []
+		for (const out of msg.outputs) {
+			const v = validateOutputName(out.name)
+			if (!v.ok) {
+				this._postError(`Invalid output name: ${v.reason}`)
+				return
 			}
+			validated.push({ safeName: v.safe ?? '', instances: out.instances })
+		}
 
-			this._panel.webview.postMessage({ type: 'done', files: written })
+		// Source font path must match the cached buffer's path (also picked through dialog).
+		if (!this._isAllowedLoadPath(msg.fontPath)) {
+			this._postError('Refusing to process a font path that was not picked by the file dialog.')
+			return
+		}
+
+		const config = vscode.workspace.getConfiguration('vf-clamp')
+		const timeoutMs = config.get<number>('processingTimeoutMs', 120_000)
+
+		this._cancelSource?.dispose()
+		this._cancelSource = new vscode.CancellationTokenSource()
+		const token = this._cancelSource.token
+
+		try {
+			await vscode.window.withProgress(
+				{
+					location: vscode.ProgressLocation.Notification,
+					title: 'vf-clamp: generating restricted font…',
+					cancellable: true,
+				},
+				async (progress, progressToken) => {
+					progressToken.onCancellationRequested(() => this._cancelSource?.cancel())
+
+					this._postMessage({ type: 'progress', message: 'Preparing font engine… (~10s first run)' })
+					progress.report({ message: 'Preparing font engine…' })
+
+					// Re-use cached buffer if mtime matches; otherwise read fresh.
+					let buffer = await this._getFontBuffer(msg.fontPath)
+
+					const vfClamp = await loadVfClamp()
+
+					this._postMessage({ type: 'progress', message: 'Processing font…' })
+					progress.report({ message: 'Processing font…' })
+
+					let timer: NodeJS.Timeout | undefined
+					const results = await Promise.race<Array<{ name: string; format: string; buffer: Buffer }>>([
+						vfClamp.clampFont(buffer, { outputs: msg.outputs, format: msg.format }),
+						new Promise<never>((_, reject) => {
+							timer = setTimeout(
+								() => reject(new Error(`Processing timed out after ${Math.round(timeoutMs / 1000)} s.`)),
+								timeoutMs,
+							)
+						}),
+						new Promise<never>((_, reject) => {
+							token.onCancellationRequested(() => reject(new Error('Cancelled.')))
+						}),
+					]).finally(() => { if (timer) clearTimeout(timer) })
+
+					if (token.isCancellationRequested) throw new Error('Cancelled.')
+
+					await mkdir(requestedOutputDir, { recursive: true })
+
+					// Pre-check overwrites; ask once for permission to overwrite all collisions.
+					const collisions: string[] = []
+					const plannedPaths: string[] = []
+					for (const result of results) {
+						const fmt = (result.format && FORMAT_EXT[result.format as FontFormat]) || msg.format
+						const planned = join(requestedOutputDir, `${result.name}.${fmt}`)
+						const resolved = resolveWithinRoot(requestedOutputDir, planned)
+						if (!resolved) {
+							throw new Error(`Refusing to write outside the chosen folder (${result.name}).`)
+						}
+						plannedPaths.push(resolved)
+						if (existsSync(resolved)) collisions.push(resolved)
+					}
+					if (collisions.length > 0) {
+						const choice = await vscode.window.showWarningMessage(
+							`${collisions.length} file(s) will be overwritten. Continue?`,
+							{ modal: true, detail: collisions.map(p => safeBasename(p)).join('\n') },
+							'Overwrite', 'Cancel',
+						)
+						if (choice !== 'Overwrite') throw new Error('Cancelled by user.')
+					}
+
+					const written: string[] = []
+					// Sequential per-output progress reports; writes themselves can overlap.
+					await Promise.all(results.map(async (result, idx) => {
+						const outPath = plannedPaths[idx]
+						if (!outPath) return
+						this._postMessage({ type: 'progress', message: `Writing ${basename(outPath)} (${idx + 1}/${results.length})` })
+						progress.report({ message: `Writing ${basename(outPath)} (${idx + 1}/${results.length})` })
+						await writeFile(outPath, result.buffer)
+						written.push(outPath)
+					}))
+
+					this._postMessage({ type: 'done', files: written })
+					const action = await vscode.window.showInformationMessage(
+						`vf-clamp: wrote ${written.length} file(s).`,
+						'Reveal in File Explorer',
+					)
+					if (action && written[0]) {
+						await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(written[0]))
+					}
+				},
+			)
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err)
-			this._panel.webview.postMessage({ type: 'error', message })
+			const message = sanitizeErrorMessage(err)
+			this._postError(message)
+			vscode.window.showErrorMessage(`vf-clamp: ${message}`)
+			getOutputChannel().appendLine(`[error] generate: ${err instanceof Error ? err.stack : String(err)}`)
+		} finally {
+			this._cancelSource?.dispose()
+			this._cancelSource = null
 		}
 	}
 
-	/** Build and return the full HTML for the webview. */
+	/** Return the cached font buffer if mtime matches, else read fresh. */
+	private async _getFontBuffer(fontPath: string): Promise<Buffer> {
+		const abs = resolve(fontPath)
+		const st = await stat(abs)
+		if (
+			this._bufferCache &&
+			this._bufferCache.path === abs &&
+			this._bufferCache.mtimeMs === st.mtimeMs
+		) {
+			return this._bufferCache.buffer
+		}
+		const buffer = await readFile(abs)
+		this._bufferCache = { path: abs, mtimeMs: st.mtimeMs, buffer }
+		return buffer
+	}
+
+	/** Send a typed outgoing message to the webview. */
+	private _postMessage(msg: OutgoingMessage): void {
+		void this._panel.webview.postMessage(msg)
+	}
+
+	/** Send a typed error message to the webview. */
+	private _postError(message: string): void {
+		this._postMessage({ type: 'error', message })
+	}
+
+	/** Build the webview HTML; references external media/ files via asWebviewUri. */
 	private _getHtml(): string {
-		// Generate a fresh nonce for each HTML load — required for a safe script-src CSP
 		const nonce = randomBytes(16).toString('base64')
 		const webview = this._panel.webview
 		const csp = [
 			`default-src 'none'`,
-			`style-src ${webview.cspSource} 'nonce-${nonce}'`,
+			`base-uri 'none'`,
+			`form-action 'none'`,
+			`frame-ancestors 'none'`,
+			`connect-src 'none'`,
+			`img-src ${webview.cspSource}`,
+			`font-src ${webview.cspSource}`,
+			`style-src 'nonce-${nonce}'`,
 			`script-src 'nonce-${nonce}'`,
 		].join('; ')
-		return /* html */`<!DOCTYPE html>
-<html lang="en">
-<head>
-	<meta charset="UTF-8" />
-	<meta http-equiv="Content-Security-Policy" content="${csp}" />
-	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-	<title>vf-clamp</title>
-	<style nonce="${nonce}">
-		*, *::before, *::after { box-sizing: border-box; }
 
-		body {
-			font-family: var(--vscode-font-family);
-			font-size: var(--vscode-font-size);
-			color: var(--vscode-foreground);
-			background-color: var(--vscode-editor-background);
-			padding: 20px 24px;
-			margin: 0;
-			max-width: 640px;
+		const mediaRoot = vscode.Uri.joinPath(this._extensionUri, 'media')
+		const styleUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'webview.css'))
+		const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(mediaRoot, 'webview.js'))
+
+		// The HTML template lives in media/webview.html and is read at runtime; bundle it for
+		// production by inlining via fs.
+		const fs = require('node:fs') as typeof import('node:fs')
+		const htmlPath = require('node:path').join(this._extensionUri.fsPath, 'media', 'webview.html')
+		let html = ''
+		try {
+			html = fs.readFileSync(htmlPath, 'utf8')
+		} catch {
+			// Fallback inline shell so the panel never renders blank if media/ is missing.
+			html = `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="__CSP__"></head><body><p>vf-clamp UI failed to load (missing media/webview.html).</p></body></html>`
 		}
-
-		h1 {
-			font-size: 1.1em;
-			font-weight: 600;
-			margin: 0 0 20px;
-			color: var(--vscode-foreground);
-			letter-spacing: 0.02em;
-		}
-
-		section {
-			margin-bottom: 24px;
-		}
-
-		label, .label {
-			display: block;
-			font-size: 0.85em;
-			font-weight: 600;
-			text-transform: uppercase;
-			letter-spacing: 0.06em;
-			color: var(--vscode-descriptionForeground);
-			margin-bottom: 6px;
-		}
-
-		.font-path {
-			font-size: 0.9em;
-			color: var(--vscode-foreground);
-			margin-bottom: 8px;
-			word-break: break-all;
-			min-height: 1.4em;
-		}
-
-		button {
-			background: var(--vscode-button-background);
-			color: var(--vscode-button-foreground);
-			border: none;
-			padding: 5px 12px;
-			cursor: pointer;
-			font-family: var(--vscode-font-family);
-			font-size: var(--vscode-font-size);
-			border-radius: 2px;
-		}
-
-		button:hover {
-			background: var(--vscode-button-hoverBackground);
-		}
-
-		button:disabled {
-			opacity: 0.5;
-			cursor: not-allowed;
-		}
-
-		button.secondary {
-			background: var(--vscode-button-secondaryBackground);
-			color: var(--vscode-button-secondaryForeground);
-		}
-
-		button.secondary:hover {
-			background: var(--vscode-button-secondaryHoverBackground);
-		}
-
-		.instance-controls {
-			display: flex;
-			gap: 8px;
-			margin-bottom: 8px;
-		}
-
-		.instance-list {
-			border: 1px solid var(--vscode-panel-border);
-			border-radius: 2px;
-			max-height: 240px;
-			overflow-y: auto;
-			padding: 4px 0;
-		}
-
-		.instance-item {
-			display: flex;
-			align-items: center;
-			gap: 8px;
-			padding: 4px 10px;
-			cursor: pointer;
-		}
-
-		.instance-item:hover {
-			background: var(--vscode-list-hoverBackground);
-		}
-
-		.instance-item input[type="checkbox"] {
-			cursor: pointer;
-			accent-color: var(--vscode-focusBorder);
-			width: 14px;
-			height: 14px;
-			flex-shrink: 0;
-		}
-
-		.instance-name {
-			font-size: 0.9em;
-			flex: 1;
-		}
-
-		.instance-coords {
-			font-size: 0.78em;
-			color: var(--vscode-descriptionForeground);
-			font-family: var(--vscode-editor-font-family, monospace);
-		}
-
-		.empty-state {
-			padding: 12px 10px;
-			color: var(--vscode-descriptionForeground);
-			font-size: 0.88em;
-			font-style: italic;
-		}
-
-		.row {
-			display: flex;
-			align-items: center;
-			gap: 8px;
-		}
-
-		input[type="text"] {
-			background: var(--vscode-input-background);
-			color: var(--vscode-input-foreground);
-			border: 1px solid var(--vscode-input-border, transparent);
-			padding: 4px 8px;
-			font-family: var(--vscode-font-family);
-			font-size: var(--vscode-font-size);
-			border-radius: 2px;
-			flex: 1;
-		}
-
-		input[type="text"]:focus {
-			outline: 1px solid var(--vscode-focusBorder);
-			border-color: var(--vscode-focusBorder);
-		}
-
-		select {
-			background: var(--vscode-dropdown-background);
-			color: var(--vscode-dropdown-foreground);
-			border: 1px solid var(--vscode-dropdown-border, transparent);
-			padding: 4px 8px;
-			font-family: var(--vscode-font-family);
-			font-size: var(--vscode-font-size);
-			border-radius: 2px;
-			cursor: pointer;
-		}
-
-		.output-dir-row {
-			display: flex;
-			align-items: center;
-			gap: 8px;
-		}
-
-		.output-dir-path {
-			flex: 1;
-			font-size: 0.85em;
-			color: var(--vscode-descriptionForeground);
-			word-break: break-all;
-			min-height: 1.4em;
-		}
-
-		.status {
-			margin-top: 4px;
-			min-height: 1.6em;
-			font-size: 0.88em;
-			padding: 6px 8px;
-			border-radius: 2px;
-		}
-
-		.status.info {
-			color: var(--vscode-descriptionForeground);
-		}
-
-		.status.progress {
-			color: var(--vscode-notificationsInfoIcon-foreground, #3794ff);
-			background: var(--vscode-inputValidation-infoBackground, transparent);
-		}
-
-		.status.success {
-			color: var(--vscode-terminal-ansiGreen, #4ec9b0);
-		}
-
-		.status.error {
-			color: var(--vscode-errorForeground, #f48771);
-			background: var(--vscode-inputValidation-errorBackground, transparent);
-		}
-
-		.mb-section { margin-bottom: 14px; }
-
-		.generate-btn {
-			width: 100%;
-			padding: 8px 12px;
-			font-size: 1em;
-			font-weight: 600;
-			margin-top: 4px;
-		}
-
-		#section-instances,
-		#section-output {
-			display: none;
-		}
-
-		.axes-summary {
-			margin-bottom: 10px;
-			font-size: 0.82em;
-			color: var(--vscode-descriptionForeground);
-		}
-
-		.axes-summary span {
-			margin-right: 12px;
-		}
-
-		hr {
-			border: none;
-			border-top: 1px solid var(--vscode-panel-border);
-			margin: 0 0 20px;
-		}
-	</style>
-</head>
-<body>
-	<h1>vf-clamp</h1>
-
-	<!-- Font file section -->
-	<section id="section-font">
-		<span class="label">Font File</span>
-		<div class="font-path" id="font-path-display">No font selected</div>
-		<button id="btn-select-font">Select Font…</button>
-	</section>
-
-	<hr />
-
-	<!-- Instances section -->
-	<section id="section-instances">
-		<span class="label">Named Instances</span>
-		<div class="axes-summary" id="axes-summary"></div>
-		<div class="instance-controls">
-			<button class="secondary" id="btn-select-all">Select All</button>
-			<button class="secondary" id="btn-deselect-all">Deselect All</button>
-		</div>
-		<div class="instance-list" id="instance-list">
-			<div class="empty-state">No instances loaded.</div>
-		</div>
-	</section>
-
-	<!-- Output section -->
-	<section id="section-output">
-		<hr />
-		<div class="mb-section">
-			<span class="label">Output Name</span>
-			<input type="text" id="output-name" placeholder="e.g. Typeface-Light-Bold" />
-		</div>
-		<div class="mb-section">
-			<span class="label">Format</span>
-			<select id="output-format">
-				<option value="ttf">TTF</option>
-				<option value="otf">OTF</option>
-				<option value="woff">WOFF</option>
-				<option value="woff2">WOFF2</option>
-			</select>
-		</div>
-		<div class="mb-section">
-			<span class="label">Output Folder</span>
-			<div class="output-dir-row">
-				<div class="output-dir-path" id="output-dir-display">No folder selected</div>
-				<button class="secondary" id="btn-pick-dir">Choose…</button>
-			</div>
-		</div>
-		<button class="generate-btn" id="btn-generate" disabled>Generate</button>
-		<div class="status info" id="status"></div>
-	</section>
-
-	<script nonce="${nonce}">
-		// ─── VS Code API ──────────────────────────────────────────────────────
-		const vscode = acquireVsCodeApi()
-
-		// ─── State ────────────────────────────────────────────────────────────
-		/** @type {string|null} */
-		let currentFontPath = null
-		/** @type {string|null} */
-		let currentOutputDir = null
-		/** @type {Array<{name:string,coordinates:Record<string,number>}>} */
-		let currentInstances = []
-
-		// ─── DOM refs ─────────────────────────────────────────────────────────
-		const fontPathDisplay = document.getElementById('font-path-display')
-		const btnSelectFont = document.getElementById('btn-select-font')
-		const sectionInstances = document.getElementById('section-instances')
-		const sectionOutput = document.getElementById('section-output')
-		const axesSummary = document.getElementById('axes-summary')
-		const instanceList = document.getElementById('instance-list')
-		const btnSelectAll = document.getElementById('btn-select-all')
-		const btnDeselectAll = document.getElementById('btn-deselect-all')
-		const outputNameInput = document.getElementById('output-name')
-		const outputFormatSelect = document.getElementById('output-format')
-		const outputDirDisplay = document.getElementById('output-dir-display')
-		const btnPickDir = document.getElementById('btn-pick-dir')
-		const btnGenerate = document.getElementById('btn-generate')
-		const statusEl = document.getElementById('status')
-
-		// ─── Compact name helper ──────────────────────────────────────────────
-		/**
-		 * Generate a compact name from first and last selected instance names.
-		 * Strips shared prefix/suffix tokens and joins with a dash.
-		 * Canonical implementation: @liiift-studio/vf-clamp src/core/utils.ts compactName()
-		 * This copy runs in the sandboxed webview iframe and cannot import the npm package.
-		 * @param {string} first
-		 * @param {string} last
-		 * @returns {string}
-		 */
-		function compactName(first, last) {
-			if (first === last) return first
-			const fw = first.split(' ')
-			const lw = last.split(' ')
-			let prefixLen = 0
-			while (
-				prefixLen < fw.length &&
-				prefixLen < lw.length &&
-				fw[prefixLen] === lw[prefixLen]
-			) prefixLen++
-			let suffixLen = 0
-			while (
-				suffixLen < fw.length - prefixLen &&
-				suffixLen < lw.length - prefixLen &&
-				fw[fw.length - 1 - suffixLen] === lw[lw.length - 1 - suffixLen]
-			) suffixLen++
-			const prefix = fw.slice(0, prefixLen).join(' ')
-			const a = fw.slice(prefixLen, fw.length - (suffixLen || 0)).join(' ')
-			const b = lw.slice(prefixLen, lw.length - (suffixLen || 0)).join(' ')
-			const suffix = suffixLen > 0 ? fw.slice(fw.length - suffixLen).join(' ') : ''
-			const middle = a && b ? a + '-' + b : (a || b)
-			return [prefix, middle, suffix].filter(Boolean).join(' ')
-		}
-
-		// ─── Instance list rendering ──────────────────────────────────────────
-
-		/** Return all currently checked instance names. */
-		function getCheckedInstances() {
-			return Array.from(instanceList.querySelectorAll('input[type="checkbox"]:checked'))
-				.map(cb => cb.value)
-		}
-
-		/** Update the output name field based on selected instances. */
-		function updateOutputName() {
-			const checked = getCheckedInstances()
-			if (checked.length === 0) return
-			outputNameInput.value = compactName(checked[0], checked[checked.length - 1])
-		}
-
-		/** Enable or disable the Generate button based on form completeness. */
-		function updateGenerateButton() {
-			const hasFont = !!currentFontPath
-			const hasInstances = getCheckedInstances().length > 0
-			const hasName = outputNameInput.value.trim().length > 0
-			const hasDir = !!currentOutputDir
-			btnGenerate.disabled = !(hasFont && hasInstances && hasName && hasDir)
-		}
-
-		/**
-		 * Render the named instances as a checkbox list.
-		 * @param {Array<{name:string,coordinates:Record<string,number>}>} instances
-		 */
-		function renderInstances(instances) {
-			instanceList.innerHTML = ''
-			if (instances.length === 0) {
-				instanceList.innerHTML = '<div class="empty-state">No named instances found in this font.</div>'
-				return
-			}
-			instances.forEach(inst => {
-				const item = document.createElement('div')
-				item.className = 'instance-item'
-
-				const cb = document.createElement('input')
-				cb.type = 'checkbox'
-				cb.value = inst.name
-				cb.id = 'inst-' + inst.name.replace(/\s+/g, '-')
-				cb.addEventListener('change', () => {
-					updateOutputName()
-					updateGenerateButton()
-				})
-
-				const nameLabel = document.createElement('label')
-				nameLabel.htmlFor = cb.id
-				nameLabel.className = 'instance-name'
-				nameLabel.textContent = inst.name
-
-				const coords = document.createElement('span')
-				coords.className = 'instance-coords'
-				coords.textContent = Object.entries(inst.coordinates)
-					.map(([k, v]) => k + ':' + v)
-					.join('  ')
-
-				item.append(cb, nameLabel, coords)
-				// Clicking the row toggles the checkbox
-				item.addEventListener('click', e => {
-					if (e.target !== cb && e.target !== nameLabel) {
-						cb.checked = !cb.checked
-						cb.dispatchEvent(new Event('change'))
-					}
-				})
-				instanceList.appendChild(item)
-			})
-		}
-
-		// ─── Button handlers ──────────────────────────────────────────────────
-
-		btnSelectFont.addEventListener('click', () => {
-			vscode.postMessage({ type: 'pickFile' })
-		})
-
-		btnSelectAll.addEventListener('click', () => {
-			instanceList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true })
-			updateOutputName()
-			updateGenerateButton()
-		})
-
-		btnDeselectAll.addEventListener('click', () => {
-			instanceList.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false })
-			updateGenerateButton()
-		})
-
-		btnPickDir.addEventListener('click', () => {
-			vscode.postMessage({ type: 'pickOutputDir' })
-		})
-
-		outputNameInput.addEventListener('input', updateGenerateButton)
-
-		btnGenerate.addEventListener('click', () => {
-			const checked = getCheckedInstances()
-			if (checked.length === 0) {
-				setStatus('Select at least one instance.', 'error')
-				return
-			}
-			const name = outputNameInput.value.trim()
-			if (!name) {
-				setStatus('Enter an output name.', 'error')
-				return
-			}
-			if (!currentOutputDir) {
-				setStatus('Choose an output folder.', 'error')
-				return
-			}
-			btnGenerate.disabled = true
-			setStatus('Warming up Pyodide… (~10s first run)', 'progress')
-			vscode.postMessage({
-				type: 'generate',
-				fontPath: currentFontPath,
-				outputs: [{ name, instances: checked }],
-				format: outputFormatSelect.value,
-				outputDir: currentOutputDir,
-			})
-		})
-
-		// ─── Status helper ────────────────────────────────────────────────────
-
-		/**
-		 * Display a status message with a given severity class.
-		 * @param {string} msg
-		 * @param {'info'|'progress'|'success'|'error'} cls
-		 */
-		function setStatus(msg, cls) {
-			statusEl.textContent = msg
-			statusEl.className = 'status ' + cls
-		}
-
-		// ─── Messages from extension host ─────────────────────────────────────
-
-		window.addEventListener('message', event => {
-			const msg = event.data
-			switch (msg.type) {
-				case 'fontLoaded': {
-					currentFontPath = msg.path
-					currentInstances = msg.instances
-					fontPathDisplay.textContent = msg.name || msg.path
-
-					// Detect static fonts (no axes) — show warning and hide output controls
-					const isVariable = msg.axes && msg.axes.length > 0
-					if (!isVariable) {
-						axesSummary.textContent = ''
-						instanceList.innerHTML = '<div class="empty-state">Not a variable font — no axes found.</div>'
-						sectionInstances.style.display = 'block'
-						sectionOutput.style.display = 'none'
-						setStatus('This font has no variable axes. Select a variable font (.ttf/.otf).', 'error')
-						break
-					}
-
-					// Axes summary
-					axesSummary.innerHTML = msg.axes.map(ax =>
-						'<span><b>' + ax.tag + '</b> ' +
-						ax.minimum + '–' + ax.maximum +
-						(ax.name ? ' (' + ax.name + ')' : '') +
-						'</span>'
-					).join('')
-
-					renderInstances(msg.instances)
-					sectionInstances.style.display = 'block'
-					sectionOutput.style.display = 'block'
-					setStatus('', 'info')
-					updateGenerateButton()
-					break
-				}
-
-				case 'filePicked': {
-					// Font load follows automatically from the host — nothing to do in the webview
-					break
-				}
-
-				case 'outputDirPicked': {
-					currentOutputDir = msg.path
-					outputDirDisplay.textContent = msg.path
-					updateGenerateButton()
-					break
-				}
-
-				case 'progress': {
-					setStatus(msg.message, 'progress')
-					break
-				}
-
-				case 'done': {
-					btnGenerate.disabled = false
-					updateGenerateButton()
-					const fileList = msg.files.join('\n')
-					setStatus('Done:\n' + fileList, 'success')
-					break
-				}
-
-				case 'error': {
-					btnGenerate.disabled = false
-					updateGenerateButton()
-					setStatus('Error: ' + msg.message, 'error')
-					break
-				}
-			}
-		})
-	</script>
-</body>
-</html>`
+		return html
+			.replace(/__CSP__/g, csp)
+			.replace(/__NONCE__/g, nonce)
+			.replace(/__STYLE_URI__/g, styleUri.toString())
+			.replace(/__SCRIPT_URI__/g, scriptUri.toString())
 	}
 
-	/** Dispose the panel and all associated resources. */
+	/** Dispose the panel and all associated resources (idempotent). */
 	public dispose(): void {
+		if (this._disposed) return
+		this._disposed = true
 		VFClampPanel.currentPanel = undefined
-		this._panel.dispose()
-		this._disposables.forEach(d => d.dispose())
-		this._disposables = []
+		try { this._panel.dispose() } catch { /* already disposed */ }
+		this._cancelSource?.dispose()
+		this._cancelSource = null
+		while (this._disposables.length) {
+			const d = this._disposables.pop()
+			try { d?.dispose() } catch { /* tolerate double-dispose */ }
+		}
+		this._bufferCache = null
 	}
 }
+
+// Silence unused warnings for the dirname import (kept for future use in path checks).
+void dirname

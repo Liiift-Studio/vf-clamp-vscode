@@ -1,54 +1,134 @@
 {
 	"name": "vf-clamp",
-	"displayName": "vf-clamp",
+	"displayName": "vf-clamp — Variable Font Clamper",
 	"description": "Generate restricted variable fonts from named instance ranges",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"publisher": "liiift-studio",
+	"icon": "media/icon.png",
 	"engines": {
-		"vscode": "^1.85.0"
+		"vscode": "^1.85.0",
+		"node": ">=18"
 	},
-	"categories": ["Other"],
-	"keywords": ["font", "variable font", "typography", "type foundry"],
-	"activationEvents": [],
+	"extensionKind": ["workspace"],
+	"qna": false,
+	"categories": ["Other", "Visualization", "Formatters"],
+	"keywords": [
+		"font",
+		"variable font",
+		"typography",
+		"type foundry",
+		"subset",
+		"clamp",
+		"restrict",
+		"pyodide",
+		"fonttools",
+		"opentype",
+		"truetype"
+	],
+	"activationEvents": [
+		"onCommand:vf-clamp.openPanel",
+		"onCommand:vf-clamp.openFile"
+	],
 	"main": "./dist/extension.js",
+	"capabilities": {
+		"untrustedWorkspaces": {
+			"supported": "limited",
+			"description": "vf-clamp reads font files from the workspace and processes them with Pyodide. In untrusted workspaces, file processing is disabled until the workspace is trusted."
+		},
+		"virtualWorkspaces": {
+			"supported": false,
+			"description": "vf-clamp requires access to the local filesystem for reading and writing font files."
+		}
+	},
 	"contributes": {
 		"commands": [
 			{
 				"command": "vf-clamp.openPanel",
-				"title": "vf-clamp: Generate Restricted Variable Fonts"
+				"title": "Generate Restricted Variable Fonts",
+				"category": "vf-clamp"
 			},
 			{
 				"command": "vf-clamp.openFile",
-				"title": "vf-clamp: Open Font File"
+				"title": "Open Font File in vf-clamp",
+				"category": "vf-clamp"
 			}
 		],
 		"menus": {
 			"explorer/context": [
 				{
 					"command": "vf-clamp.openFile",
-					"when": "resourceExtname == '.ttf' || resourceExtname == '.otf'",
-					"group": "navigation"
+					"when": "resourceExtname =~ /\\.(ttf|otf|TTF|OTF)$/",
+					"group": "7_modification"
 				}
 			]
+		},
+		"configuration": {
+			"title": "vf-clamp",
+			"properties": {
+				"vf-clamp.processingTimeoutMs": {
+					"type": "number",
+					"default": 120000,
+					"minimum": 5000,
+					"description": "Maximum time in milliseconds to wait for font processing before aborting."
+				},
+				"vf-clamp.defaultFormat": {
+					"type": "string",
+					"enum": ["ttf", "otf", "woff", "woff2"],
+					"default": "ttf",
+					"description": "Default output format for generated fonts."
+				},
+				"vf-clamp.defaultOutputDir": {
+					"type": "string",
+					"default": "",
+					"description": "Absolute path used as the default output directory. Leave empty to require selection per session."
+				},
+				"vf-clamp.maxFontSizeBytes": {
+					"type": "number",
+					"default": 209715200,
+					"minimum": 1048576,
+					"description": "Maximum allowed font file size in bytes (default 200 MB). Larger files will be rejected."
+				}
+			}
 		}
 	},
 	"scripts": {
-		"vscode:prepublish": "npm run compile",
-		"compile": "tsc -p ./",
-		"watch": "tsc -watch -p ./",
-		"lint": "tsc --noEmit"
+		"vscode:prepublish": "npm run package",
+		"compile": "npm run clean && node esbuild.mjs",
+		"clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+		"watch": "node esbuild.mjs --watch",
+		"package": "npm run clean && node esbuild.mjs --production",
+		"lint": "tsc --noEmit",
+		"test": "node ./dist/test/runTest.js",
+		"test:unit": "mocha --ui tdd ./dist/test/suite/messages.test.js ./dist/test/suite/security.test.js ./dist/test/suite/util.test.js",
+		"pretest": "npm run compile-tests",
+		"compile-tests": "tsc -p ./tsconfig.test.json",
+		"vsce-package": "vsce package",
+		"vsce-publish": "vsce publish"
 	},
 	"dependencies": {
 		"@liiift-studio/vf-clamp": "^2.0.1"
 	},
 	"devDependencies": {
+		"@types/mocha": "^10.0.6",
 		"@types/node": "^20.0.0",
-		"@types/vscode": "^1.85.0",
+		"@types/vscode": "~1.85.0",
+		"@vscode/test-electron": "^2.4.1",
+		"@vscode/vsce": "^3.0.0",
+		"esbuild": "^0.24.0",
+		"mocha": "^10.7.3",
 		"typescript": "^5.0.0"
 	},
 	"repository": {
 		"type": "git",
 		"url": "https://github.com/Liiift-Studio/vf-clamp-vscode.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Liiift-Studio/vf-clamp-vscode/issues"
+	},
+	"homepage": "https://www.vfclamp.com",
+	"galleryBanner": {
+		"color": "#1e1e1e",
+		"theme": "dark"
 	},
 	"license": "MIT"
 }

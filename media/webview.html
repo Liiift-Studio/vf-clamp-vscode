@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8" />
+	<meta http-equiv="Content-Security-Policy" content="__CSP__" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>vf-clamp</title>
+	<link rel="stylesheet" href="__STYLE_URI__" nonce="__NONCE__" />
+</head>
+<body>
+	<main aria-labelledby="title">
+		<h1 id="title">vf-clamp</h1>
+
+		<!-- Font file section -->
+		<section id="section-font" aria-labelledby="lbl-font-file">
+			<span class="label" id="lbl-font-file">Font File</span>
+			<div class="font-path" id="font-path-display" aria-live="polite" aria-atomic="true">No font selected</div>
+			<button id="btn-select-font" aria-describedby="lbl-font-file" aria-label="Select font file">Select Font</button>
+		</section>
+
+		<hr />
+
+		<!-- Instances section -->
+		<section id="section-instances" aria-labelledby="lbl-instances">
+			<span class="label" id="lbl-instances">Named Instances</span>
+			<ul class="axes-summary" id="axes-summary" aria-label="Variable font axes" role="list"></ul>
+			<div class="instance-controls">
+				<button class="secondary" id="btn-select-all">Select All</button>
+				<button class="secondary" id="btn-deselect-all">Deselect All</button>
+			</div>
+			<div class="instance-list"
+				id="instance-list"
+				role="group"
+				aria-label="Named instances"
+				tabindex="0">
+				<div class="empty-state">No instances loaded.</div>
+			</div>
+		</section>
+
+		<!-- Output section -->
+		<section id="section-output" aria-labelledby="lbl-output">
+			<hr />
+			<span class="label" id="lbl-output">Output</span>
+			<div class="mb-section">
+				<label for="output-name">Output Name</label>
+				<input type="text" id="output-name" placeholder="e.g. Typeface-Light-Bold" />
+			</div>
+			<div class="mb-section">
+				<label for="output-format">Format</label>
+				<select id="output-format">
+					<option value="ttf">TTF</option>
+					<option value="otf">OTF</option>
+					<option value="woff">WOFF</option>
+					<option value="woff2">WOFF2</option>
+				</select>
+			</div>
+			<div class="mb-section">
+				<span class="label" id="lbl-output-folder">Output Folder</span>
+				<div class="output-dir-row">
+					<div class="output-dir-path" id="output-dir-display" aria-live="polite" aria-atomic="true">No folder selected</div>
+					<button class="secondary" id="btn-pick-dir" aria-describedby="lbl-output-folder" aria-label="Choose output folder">Choose</button>
+				</div>
+			</div>
+			<button class="generate-btn"
+				id="btn-generate"
+				disabled
+				aria-describedby="generate-help">Generate</button>
+			<div id="generate-help" class="sr-only" aria-live="polite"></div>
+			<div class="status info"
+				id="status"
+				role="status"
+				aria-live="polite"
+				aria-atomic="true"></div>
+		</section>
+	</main>
+	<script nonce="__NONCE__" src="__SCRIPT_URI__"></script>
+</body>
+</html>

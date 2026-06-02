@@ -1,15 +1,20 @@
 {
 	"compilerOptions": {
-		"module": "CommonJS",
-		"moduleResolution": "node",
+		"module": "Node16",
+		"moduleResolution": "Node16",
 		"target": "ES2022",
 		"outDir": "dist",
 		"rootDir": "src",
 		"lib": ["ES2022"],
 		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"noFallthroughCasesInSwitch": true,
+		"noPropertyAccessFromIndexSignature": true,
 		"skipLibCheck": true,
-		"sourceMap": true
+		"sourceMap": false,
+		"esModuleInterop": true
 	},
 	"include": ["src"],
-	"exclude": ["node_modules", "dist", ".vscode-test"]
+	"exclude": ["node_modules", "dist", "out"]
 }
