@@ -3,7 +3,7 @@
 	"displayName": "vf-clamp — Variable Font Clamper",
 	"description": "Generate restricted variable fonts from named instance ranges",
 	"version": "0.2.0",
-	"publisher": "liiift-studio",
+	"publisher": "overpunch",
 	"icon": "media/icon.png",
 	"engines": {
 		"vscode": "^1.85.0",

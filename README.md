@@ -19,7 +19,7 @@ Powered by [`@liiift-studio/vf-clamp`](https://www.vfclamp.com) and Pyodide (fon
 **From the marketplace** — open the Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`) and run:
 
 ```
->ext install liiift-studio.vf-clamp
+>ext install overpunch.vf-clamp
 ```
 
 (The leading `>` enters Command Palette mode; this is *not* a terminal command.) You can also search for **vf-clamp** in the Extensions view.

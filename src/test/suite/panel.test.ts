@@ -5,7 +5,7 @@ import { VFClampPanel } from '../../panel.js'
 
 suite('VFClampPanel lifecycle', () => {
 	test('createOrShow creates a singleton', async () => {
-		const ext = vscode.extensions.getExtension('liiift-studio.vf-clamp')
+		const ext = vscode.extensions.getExtension('overpunch.vf-clamp')
 		await ext!.activate()
 		VFClampPanel.createOrShow(ext!.extensionUri)
 		assert.ok(VFClampPanel.currentPanel)
@@ -17,7 +17,7 @@ suite('VFClampPanel lifecycle', () => {
 	})
 
 	test('dispose is idempotent', async () => {
-		const ext = vscode.extensions.getExtension('liiift-studio.vf-clamp')
+		const ext = vscode.extensions.getExtension('overpunch.vf-clamp')
 		await ext!.activate()
 		VFClampPanel.createOrShow(ext!.extensionUri)
 		const panel = VFClampPanel.currentPanel!
@@ -27,7 +27,7 @@ suite('VFClampPanel lifecycle', () => {
 	})
 
 	test('Webview HTML uses matching nonces across style, script, and CSP', async () => {
-		const ext = vscode.extensions.getExtension('liiift-studio.vf-clamp')
+		const ext = vscode.extensions.getExtension('overpunch.vf-clamp')
 		await ext!.activate()
 		VFClampPanel.createOrShow(ext!.extensionUri)
 		const html = (VFClampPanel.currentPanel as unknown as { _panel: vscode.WebviewPanel })._panel.webview.html
