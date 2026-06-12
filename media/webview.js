@@ -304,6 +304,25 @@
 				updateGenerateButton()
 				setStatus(msg.message, 'error')
 				break
+
+			case 'resetWebviewState':
+				// Host has lost its state (e.g. after panel revival). Drop our persisted
+				// state so what the user sees matches what the host can honour.
+				currentFontPath = null
+				currentOutputDir = null
+				currentInstances = []
+				nameManuallyEdited = false
+				if (outputDirDisplay) outputDirDisplay.textContent = 'No folder selected'
+				if (outputNameInput) outputNameInput.value = ''
+				if (fontPathDisplay) fontPathDisplay.textContent = 'No font selected'
+				if (instanceList) instanceList.innerHTML = '<div class="empty-state">No instances loaded.</div>'
+				if (axesSummary) axesSummary.innerHTML = ''
+				if (sectionInstances) sectionInstances.style.display = 'none'
+				if (sectionOutput) sectionOutput.style.display = 'none'
+				setStatus('Reload detected — please re-pick your font and output folder.', 'info')
+				vscode.setState({})
+				updateGenerateButton()
+				break
 		}
 	})
 

@@ -62,6 +62,7 @@ export interface ProgressMsg { type: 'progress'; message: string }
 export interface DoneMsg { type: 'done'; files: string[] }
 export interface ErrorMsg { type: 'error'; message: string }
 export interface NameSuggestedMsg { type: 'nameSuggested'; name: string }
+export interface ResetWebviewStateMsg { type: 'resetWebviewState' }
 
 export type OutgoingMessage =
 	| FontLoadedMsg
@@ -71,6 +72,7 @@ export type OutgoingMessage =
 	| DoneMsg
 	| ErrorMsg
 	| NameSuggestedMsg
+	| ResetWebviewStateMsg
 
 // ─── Runtime validation ──────────────────────────────────────────────────────
 
@@ -118,10 +120,31 @@ export function isFontFormat(value: unknown): value is FontFormat {
 	return value === 'ttf' || value === 'otf' || value === 'woff' || value === 'woff2'
 }
 
-/** File extension to use for each supported format. */
+/** Descriptor for a supported output format. */
+export interface FormatDescriptor {
+	extension: string
+	label: string
+}
+
+/**
+ * Single source of truth for supported output formats. Adding a format means
+ * updating this registry, FontFormat, isFontFormat, the <option> list in
+ * media/webview.html, and the enum in package.json configuration.
+ */
+export const FORMAT_REGISTRY: Record<FontFormat, FormatDescriptor> = {
+	ttf: { extension: 'ttf', label: 'TTF' },
+	otf: { extension: 'otf', label: 'OTF' },
+	woff: { extension: 'woff', label: 'WOFF' },
+	woff2: { extension: 'woff2', label: 'WOFF2' },
+}
+
+/**
+ * Legacy export — file extension only. Kept for backwards compatibility with any
+ * external consumers. New code should use FORMAT_REGISTRY[fmt].extension.
+ */
 export const FORMAT_EXT: Record<FontFormat, string> = {
-	ttf: 'ttf',
-	otf: 'otf',
-	woff: 'woff',
-	woff2: 'woff2',
+	ttf: FORMAT_REGISTRY.ttf.extension,
+	otf: FORMAT_REGISTRY.otf.extension,
+	woff: FORMAT_REGISTRY.woff.extension,
+	woff2: FORMAT_REGISTRY.woff2.extension,
 }

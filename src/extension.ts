@@ -2,7 +2,7 @@
 // Registers commands, wires up the webview panel serializer, and exposes a shared
 // OutputChannel so panel errors can be diagnosed even when the webview itself fails.
 import * as vscode from 'vscode'
-import { VFClampPanel } from './panel.js'
+import { VFClampPanel, resetVfClampPromise } from './panel.js'
 
 /** Shared OutputChannel for diagnostic logging. */
 let output: vscode.OutputChannel | undefined
@@ -52,4 +52,7 @@ export function deactivate(): void {
 	VFClampPanel.currentPanel?.dispose()
 	output?.dispose()
 	output = undefined
+	// Clear the cached vf-clamp module promise so a subsequent activation gets a
+	// fresh Pyodide heap rather than reusing the previous activation's WASM state.
+	resetVfClampPromise()
 }

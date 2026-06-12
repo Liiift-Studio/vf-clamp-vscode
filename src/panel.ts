@@ -2,7 +2,7 @@
 import * as vscode from 'vscode'
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
-import { join, basename, resolve, dirname } from 'node:path'
+import { join, basename, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 
 import {
@@ -12,12 +12,19 @@ import {
 	type FontFormat,
 	type AxisInfo,
 	type InstanceInfo,
-	FORMAT_EXT,
+	FORMAT_REGISTRY,
 	isIncomingMessage,
 } from './shared/messages.js'
 import { compactName } from './util.js'
 import { validateOutputName, resolveWithinRoot, sanitizeErrorMessage, safeBasename } from './security.js'
 import { getOutputChannel } from './extension.js'
+
+/** Minimum allowed processing timeout (ms), enforced even if user edits settings.json directly. */
+const MIN_TIMEOUT_MS = 5_000
+/** Maximum number of distinct font paths we will keep in the allow-list. */
+const MAX_ALLOWED_FONT_PATHS = 32
+/** Maximum length for the panel title font label before truncation. */
+const MAX_TITLE_FONT_CHARS = 60
 
 /** Shape of the @liiift-studio/vf-clamp ESM module we depend on. */
 interface VfClampModule {
@@ -47,11 +54,42 @@ function loadVfClamp(): Promise<VfClampModule> {
 	return vfClampPromise
 }
 
+/** Reset the cached vf-clamp module promise. Called from deactivate(). */
+export function resetVfClampPromise(): void {
+	vfClampPromise = null
+}
+
 /** Cached font buffer keyed by absolute path + mtime so we do not re-read on every generate. */
 interface BufferCacheEntry {
 	path: string
 	mtimeMs: number
 	buffer: Buffer
+}
+
+/**
+ * Discriminated panel state. Replaces the implicit conjunction of fields
+ * (\_bufferCache, \_lastPickedOutputDir, etc.) with a single typed value.
+ */
+type PanelState =
+	| { kind: 'idle' }
+	| { kind: 'fontLoaded'; fontPath: string }
+	| { kind: 'generating' }
+
+/** Format a font path into a panel title, truncating very long basenames. */
+export function formatTitle(fontPath: string): string {
+	const name = safeBasename(fontPath)
+	const trimmed = name.length > MAX_TITLE_FONT_CHARS
+		? name.slice(0, MAX_TITLE_FONT_CHARS - 1) + '…'
+		: name
+	return `vf-clamp · ${trimmed}`
+}
+
+/** Return the file extension for a result, falling back to the requested output format. */
+export function extensionForResult(resultFormat: string | undefined, requestedFormat: FontFormat): string {
+	if (resultFormat && resultFormat in FORMAT_REGISTRY) {
+		return FORMAT_REGISTRY[resultFormat as FontFormat].extension
+	}
+	return FORMAT_REGISTRY[requestedFormat].extension
 }
 
 /** Manages the vf-clamp webview panel. */
@@ -69,6 +107,10 @@ export class VFClampPanel {
 	private _bufferCache: BufferCacheEntry | null = null
 	private _lastPickedOutputDir: string | null = null
 	private _cancelSource: vscode.CancellationTokenSource | null = null
+	/** Bounded LRU of paths the user picked via OS dialog (or that activated this panel). */
+	private _allowedFontPaths: string[] = []
+	/** Authoritative panel state, replacing scattered booleans. */
+	private _state: PanelState = { kind: 'idle' }
 
 	/** Create or reveal the panel. If fontPath is supplied, pre-load that font. */
 	public static createOrShow(extensionUri: vscode.Uri, fontPath?: string): void {
@@ -102,7 +144,13 @@ export class VFClampPanel {
 
 	/** Recreate the panel during VS Code's webview deserialization on reload. */
 	public static revive(panel: vscode.WebviewPanel, extensionUri: vscode.Uri): void {
-		VFClampPanel.currentPanel = new VFClampPanel(panel, extensionUri)
+		const revived = new VFClampPanel(panel, extensionUri)
+		VFClampPanel.currentPanel = revived
+		// On revival the host state is empty (no font loaded, no output dir picked),
+		// but the webview may have restored stale state from vscode.getState(). Tell
+		// the webview to clear its state so the user doesn't see a misleading
+		// pre-filled output dir whose pick the host cannot honour.
+		revived._postMessage({ type: 'resetWebviewState' })
 	}
 
 	private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
@@ -129,7 +177,7 @@ export class VFClampPanel {
 
 	/** Update the panel title to include the active font basename. */
 	private _setTitleForFont(fontPath: string): void {
-		this._panel.title = `vf-clamp · ${safeBasename(fontPath)}`
+		this._panel.title = formatTitle(fontPath)
 	}
 
 	/** Validate and route incoming webview messages. */
@@ -156,6 +204,12 @@ export class VFClampPanel {
 				await this._pickOutputDir()
 				return
 			case 'generate':
+				// Guard against concurrent generate requests (e.g. double-click before the
+				// webview disables the button). Drop the second request entirely.
+				if (this._state.kind === 'generating') {
+					this._postError('Generate is already in progress.')
+					return
+				}
 				await this._generate(message)
 				return
 			case 'cancel':
@@ -173,16 +227,22 @@ export class VFClampPanel {
 		}
 	}
 
-	/** Track paths that the user explicitly picked (or were passed in via createOrShow). */
-	private _allowedFontPaths = new Set<string>()
-
-	/** Record a font path so the webview can later request it via loadFont. */
+	/** Record a font path so the webview can later request it via loadFont. Bounded LRU. */
 	private _allowPath(p: string): void {
-		this._allowedFontPaths.add(resolve(p))
+		const abs = resolve(p)
+		// Remove any existing entry so we re-insert at the end (most-recent-used).
+		const idx = this._allowedFontPaths.indexOf(abs)
+		if (idx !== -1) this._allowedFontPaths.splice(idx, 1)
+		this._allowedFontPaths.push(abs)
+		// Evict oldest entries beyond the cap.
+		while (this._allowedFontPaths.length > MAX_ALLOWED_FONT_PATHS) {
+			this._allowedFontPaths.shift()
+		}
 	}
 
+	/** Test whether a path is currently in the allow-list. */
 	private _isAllowedLoadPath(p: string): boolean {
-		try { return this._allowedFontPaths.has(resolve(p)) } catch { return false }
+		try { return this._allowedFontPaths.includes(resolve(p)) } catch { return false }
 	}
 
 	/** Pre-load a font on behalf of the user (called by createOrShow). */
@@ -212,6 +272,7 @@ export class VFClampPanel {
 			const vfClamp = await loadVfClamp()
 			const { axes, instances } = await vfClamp.getInstances(buffer)
 			this._setTitleForFont(fontPath)
+			this._state = { kind: 'fontLoaded', fontPath: resolve(fontPath) }
 			this._postMessage({
 				type: 'fontLoaded',
 				axes,
@@ -273,41 +334,105 @@ export class VFClampPanel {
 		}
 	}
 
-	private async _generate(msg: GenerateMsg): Promise<void> {
+	/** Pre-flight checks for generate: trust, output-dir match, name validation, source-path allow-list. */
+	private _validateGenerateRequest(msg: GenerateMsg): { ok: false; reason: string } | { ok: true; requestedOutputDir: string } {
 		if (!vscode.workspace.isTrusted) {
-			this._postError('Workspace is not trusted.')
-			return
+			return { ok: false, reason: 'Workspace is not trusted.' }
 		}
-		// Output directory must match the last picked folder — webview cannot widen scope.
 		const requestedOutputDir = resolve(msg.outputDir)
 		if (!this._lastPickedOutputDir || requestedOutputDir !== this._lastPickedOutputDir) {
-			this._postError('Output folder mismatch. Pick the output folder again.')
-			return
+			return { ok: false, reason: 'Output folder mismatch. Pick the output folder again.' }
 		}
-
-		// Validate every output name before doing any work.
-		const validated: Array<{ safeName: string; instances: string[] }> = []
 		for (const out of msg.outputs) {
 			const v = validateOutputName(out.name)
 			if (!v.ok) {
-				this._postError(`Invalid output name: ${v.reason}`)
-				return
+				return { ok: false, reason: `Invalid output name: ${v.reason}` }
 			}
-			validated.push({ safeName: v.safe ?? '', instances: out.instances })
 		}
-
-		// Source font path must match the cached buffer's path (also picked through dialog).
 		if (!this._isAllowedLoadPath(msg.fontPath)) {
-			this._postError('Refusing to process a font path that was not picked by the file dialog.')
+			return { ok: false, reason: 'Refusing to process a font path that was not picked by the file dialog.' }
+		}
+		return { ok: true, requestedOutputDir }
+	}
+
+	/** Run clampFont with timeout + cancellation race. */
+	private async _runClampWithRace(
+		buffer: Buffer,
+		msg: GenerateMsg,
+		timeoutMs: number,
+		token: vscode.CancellationToken,
+	): Promise<Array<{ name: string; format: string; buffer: Buffer }>> {
+		const vfClamp = await loadVfClamp()
+		let timer: NodeJS.Timeout | undefined
+		try {
+			return await Promise.race<Array<{ name: string; format: string; buffer: Buffer }>>([
+				vfClamp.clampFont(buffer, { outputs: msg.outputs, format: msg.format }),
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(
+						() => reject(new Error(`Processing timed out after ${Math.round(timeoutMs / 1000)} s.`)),
+						timeoutMs,
+					)
+				}),
+				new Promise<never>((_, reject) => {
+					token.onCancellationRequested(() => reject(new Error('Cancelled.')))
+				}),
+			])
+		} finally {
+			if (timer) clearTimeout(timer)
+		}
+	}
+
+	/** Plan output paths and detect collisions. Returns null if any path escapes the root. */
+	private _planOutputPaths(
+		results: Array<{ name: string; format: string }>,
+		requestedFormat: FontFormat,
+		requestedOutputDir: string,
+	): { plannedPaths: string[]; collisions: string[] } | { escape: string } {
+		const plannedPaths: string[] = []
+		const collisions: string[] = []
+		for (const result of results) {
+			const ext = extensionForResult(result.format, requestedFormat)
+			const planned = join(requestedOutputDir, `${result.name}.${ext}`)
+			const resolved = resolveWithinRoot(requestedOutputDir, planned)
+			if (!resolved) return { escape: result.name }
+			plannedPaths.push(resolved)
+			if (existsSync(resolved)) collisions.push(resolved)
+		}
+		return { plannedPaths, collisions }
+	}
+
+	/** Ask the user (via modal) whether to overwrite collisions. Respects cancellation token. */
+	private async _confirmOverwrite(collisions: string[], token: vscode.CancellationToken): Promise<boolean> {
+		if (collisions.length === 0) return true
+		if (token.isCancellationRequested) return false
+		const choice = await vscode.window.showWarningMessage(
+			`${collisions.length} file(s) will be overwritten. Continue?`,
+			{ modal: true, detail: collisions.map(p => safeBasename(p)).join('\n') },
+			'Overwrite', 'Cancel',
+		)
+		// Re-check cancellation after the modal returns — user may have hit Cancel on
+		// the progress notification while the modal was open.
+		if (token.isCancellationRequested) return false
+		return choice === 'Overwrite'
+	}
+
+	private async _generate(msg: GenerateMsg): Promise<void> {
+		const validation = this._validateGenerateRequest(msg)
+		if (!validation.ok) {
+			this._postError(validation.reason)
 			return
 		}
+		const { requestedOutputDir } = validation
 
 		const config = vscode.workspace.getConfiguration('vf-clamp')
-		const timeoutMs = config.get<number>('processingTimeoutMs', 120_000)
+		const rawTimeout = config.get<number>('processingTimeoutMs', 120_000)
+		// Enforce floor even if the user wrote a lower value directly into settings.json.
+		const timeoutMs = Math.max(MIN_TIMEOUT_MS, rawTimeout)
 
 		this._cancelSource?.dispose()
 		this._cancelSource = new vscode.CancellationTokenSource()
 		const token = this._cancelSource.token
+		this._state = { kind: 'generating' }
 
 		try {
 			await vscode.window.withProgress(
@@ -322,58 +447,28 @@ export class VFClampPanel {
 					this._postMessage({ type: 'progress', message: 'Preparing font engine… (~10s first run)' })
 					progress.report({ message: 'Preparing font engine…' })
 
-					// Re-use cached buffer if mtime matches; otherwise read fresh.
-					let buffer = await this._getFontBuffer(msg.fontPath)
-
-					const vfClamp = await loadVfClamp()
+					const buffer = await this._getFontBuffer(msg.fontPath)
 
 					this._postMessage({ type: 'progress', message: 'Processing font…' })
 					progress.report({ message: 'Processing font…' })
 
-					let timer: NodeJS.Timeout | undefined
-					const results = await Promise.race<Array<{ name: string; format: string; buffer: Buffer }>>([
-						vfClamp.clampFont(buffer, { outputs: msg.outputs, format: msg.format }),
-						new Promise<never>((_, reject) => {
-							timer = setTimeout(
-								() => reject(new Error(`Processing timed out after ${Math.round(timeoutMs / 1000)} s.`)),
-								timeoutMs,
-							)
-						}),
-						new Promise<never>((_, reject) => {
-							token.onCancellationRequested(() => reject(new Error('Cancelled.')))
-						}),
-					]).finally(() => { if (timer) clearTimeout(timer) })
-
+					const results = await this._runClampWithRace(buffer, msg, timeoutMs, token)
 					if (token.isCancellationRequested) throw new Error('Cancelled.')
 
 					await mkdir(requestedOutputDir, { recursive: true })
 
-					// Pre-check overwrites; ask once for permission to overwrite all collisions.
-					const collisions: string[] = []
-					const plannedPaths: string[] = []
-					for (const result of results) {
-						const fmt = (result.format && FORMAT_EXT[result.format as FontFormat]) || msg.format
-						const planned = join(requestedOutputDir, `${result.name}.${fmt}`)
-						const resolved = resolveWithinRoot(requestedOutputDir, planned)
-						if (!resolved) {
-							throw new Error(`Refusing to write outside the chosen folder (${result.name}).`)
-						}
-						plannedPaths.push(resolved)
-						if (existsSync(resolved)) collisions.push(resolved)
-					}
-					if (collisions.length > 0) {
-						const choice = await vscode.window.showWarningMessage(
-							`${collisions.length} file(s) will be overwritten. Continue?`,
-							{ modal: true, detail: collisions.map(p => safeBasename(p)).join('\n') },
-							'Overwrite', 'Cancel',
-						)
-						if (choice !== 'Overwrite') throw new Error('Cancelled by user.')
+					const plan = this._planOutputPaths(results, msg.format, requestedOutputDir)
+					if ('escape' in plan) {
+						throw new Error(`Refusing to write outside the chosen folder (${plan.escape}).`)
 					}
 
+					const okOverwrite = await this._confirmOverwrite(plan.collisions, token)
+					if (!okOverwrite) throw new Error('Cancelled by user.')
+
 					const written: string[] = []
-					// Sequential per-output progress reports; writes themselves can overlap.
+					// Per-output progress reports; writes themselves can overlap.
 					await Promise.all(results.map(async (result, idx) => {
-						const outPath = plannedPaths[idx]
+						const outPath = plan.plannedPaths[idx]
 						if (!outPath) return
 						this._postMessage({ type: 'progress', message: `Writing ${basename(outPath)} (${idx + 1}/${results.length})` })
 						progress.report({ message: `Writing ${basename(outPath)} (${idx + 1}/${results.length})` })
@@ -399,6 +494,12 @@ export class VFClampPanel {
 		} finally {
 			this._cancelSource?.dispose()
 			this._cancelSource = null
+			// Return to fontLoaded if we still have a font, else idle.
+			if (this._bufferCache) {
+				this._state = { kind: 'fontLoaded', fontPath: this._bufferCache.path }
+			} else {
+				this._state = { kind: 'idle' }
+			}
 		}
 	}
 
@@ -479,8 +580,7 @@ export class VFClampPanel {
 			try { d?.dispose() } catch { /* tolerate double-dispose */ }
 		}
 		this._bufferCache = null
+		this._allowedFontPaths.length = 0
+		this._state = { kind: 'idle' }
 	}
 }
-
-// Silence unused warnings for the dirname import (kept for future use in path checks).
-void dirname

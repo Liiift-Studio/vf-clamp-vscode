@@ -4,6 +4,27 @@ All notable changes to the **vf-clamp** VS Code extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-06-11
+
+Hardening pass from the cross-apply deep-review.
+
+### Added
+- `FORMAT_REGISTRY` in `src/shared/messages.ts` — single source of truth
+  for supported output formats (extension + display label) so adding a
+  format touches one structure instead of several call sites.
+- `ResetWebviewStateMsg` so the host can ask the webview to clear any
+  cached selection when the underlying font changes.
+- Defensive constants in `panel.ts`: `MIN_TIMEOUT_MS`, `MAX_ALLOWED_FONT_PATHS`,
+  and `MAX_TITLE_FONT_CHARS` — enforced even when the user edits
+  `settings.json` directly.
+- `resetVfClampPromise()` so `deactivate()` can drop the cached module
+  promise and let GC reclaim the Pyodide runtime.
+
+### Changed
+- `FORMAT_EXT` kept as a thin compatibility shim; new code reads
+  `FORMAT_REGISTRY[fmt].extension`.
+- `panel.ts` resolves paths without an unused `dirname` import.
+
 ## [0.2.0] — 2026-06-01
 
 ### Added
