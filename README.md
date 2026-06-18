@@ -2,6 +2,8 @@
 
 Generate restricted variable fonts from named instance ranges — directly inside VS Code.
 
+![vf-clamp for VS Code: right-clicking a variable font in the Explorer reveals an "Open Font File in vf-clamp" command](https://raw.githubusercontent.com/Liiift-Studio/vf-clamp-vscode/main/assets/vscode.png?v=1)
+
 A customer who licenses "Light" and "Bold" receives a micro-VF spanning exactly that range, with the font's name table updated to reflect the purchased instances.
 
 Powered by [`@liiift-studio/vf-clamp`](https://www.vfclamp.com) and Pyodide (fonttools running in WASM).
