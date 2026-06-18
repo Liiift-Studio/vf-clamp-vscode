@@ -308,8 +308,9 @@ export class VFClampPanel {
 			canSelectFiles: true,
 			canSelectFolders: false,
 			canSelectMany: false,
-			// Only the formats we can actually process as input.
-			filters: { 'Variable fonts': ['ttf', 'otf'] },
+			// All formats the core engine can read as input — fonttools auto-detects the
+			// flavor (WOFF/WOFF2 are decompressed on read; brotli ships with Pyodide).
+			filters: { 'Variable fonts': ['ttf', 'otf', 'woff', 'woff2'] },
 			openLabel: 'Select Font',
 		})
 		const first = uris?.[0]

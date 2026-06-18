@@ -1,6 +1,8 @@
-// esbuild.mjs — bundles the vf-clamp VS Code extension into a single dist/extension.js
-// Bundles all dependencies (including @liiift-studio/vf-clamp) so node_modules/ does not
-// need to ship in the VSIX. Only `vscode` is external (provided by the runtime host).
+// esbuild.mjs — bundles the vf-clamp VS Code extension's own host code into dist/extension.js.
+// The font-processing dependency is NOT bundled: @liiift-studio/vf-clamp is ESM and loads its
+// WASM Python runtime (@web-alchemy/fonttools → pyodide) from real files on disk via createRequire,
+// so it cannot live inside a single JS bundle. It stays external and ships as production
+// node_modules in the VSIX (see .vscodeignore). `vscode` is external (provided by the host).
 import { build, context } from 'esbuild'
 
 const production = process.argv.includes('--production')
@@ -11,7 +13,8 @@ const baseOptions = {
 	entryPoints: ['src/extension.ts'],
 	bundle: true,
 	outfile: 'dist/extension.js',
-	external: ['vscode'],
+	// vscode is provided by the host; the font runtime ships as node_modules, not bundled.
+	external: ['vscode', '@liiift-studio/vf-clamp', '@web-alchemy/fonttools', 'pyodide'],
 	format: 'cjs',
 	platform: 'node',
 	target: 'node18',

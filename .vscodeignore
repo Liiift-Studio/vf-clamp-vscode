@@ -1,5 +1,12 @@
 src/
-node_modules/
+# Exclude all of node_modules EXCEPT the production runtime tree, which must ship in the
+# VSIX — @liiift-studio/vf-clamp loads it from disk at runtime and cannot be bundled.
+node_modules/**
+!node_modules/@liiift-studio/**
+!node_modules/@web-alchemy/**
+!node_modules/pyodide/**
+!node_modules/ws/**
+!node_modules/@types/emscripten/**
 .vscode/
 .vscode-test/
 .github/

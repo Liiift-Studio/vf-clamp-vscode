@@ -48,13 +48,13 @@ The extension contributes no default keybindings. Bind either command via *Prefe
 
 ## Usage
 
-**Option 1 — Right-click in Explorer:** Right-click any `.ttf` / `.otf` file in the file explorer and choose **vf-clamp: Open Font File**. The panel opens pre-loaded with that font.
+**Option 1 — Right-click in Explorer:** Right-click any `.ttf`, `.otf`, `.woff`, or `.woff2` file in the file explorer and choose **vf-clamp: Open Font File**. The panel opens pre-loaded with that font.
 
 **Option 2 — Command Palette:** Open the Command Palette and run **vf-clamp: Generate Restricted Variable Fonts**. Then use the **Select Font** button inside the panel.
 
 **In the panel:**
 
-1. Select a variable font file (`.ttf` or `.otf`)
+1. Select a variable font file (`.ttf`, `.otf`, `.woff`, or `.woff2`)
 2. Check the named instances you want to include
 3. Confirm the auto-suggested output name (or type your own)
 4. Choose a format: TTF, OTF, WOFF, or WOFF2
@@ -90,7 +90,7 @@ The extension calls `@liiift-studio/vf-clamp`, which uses fonttools running insi
 
 ## Known Issues
 
-- Only variable fonts (`.ttf` / `.otf`) with named instances are supported as input. Static fonts return an empty instance list.
+- Only variable fonts (`.ttf`, `.otf`, `.woff`, `.woff2`) with named instances are supported as input. Static fonts return an empty instance list.
 - The font engine stays resident for the lifetime of the VS Code window once loaded.
 - Files in untrusted workspaces are not processed until you trust the workspace.
 

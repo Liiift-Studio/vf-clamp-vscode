@@ -2,7 +2,7 @@
 	"name": "vf-clamp",
 	"displayName": "vf-clamp — Variable Font Clamper",
 	"description": "Generate restricted variable fonts from named instance ranges",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"publisher": "overpunch",
 	"icon": "media/icon.png",
 	"engines": {
@@ -57,7 +57,7 @@
 			"explorer/context": [
 				{
 					"command": "vf-clamp.openFile",
-					"when": "resourceExtname =~ /\\.(ttf|otf|TTF|OTF)$/",
+					"when": "resourceExtname =~ /\\.(ttf|otf|woff|woff2|TTF|OTF|WOFF|WOFF2)$/",
 					"group": "7_modification"
 				}
 			]

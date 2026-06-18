@@ -4,6 +4,22 @@ All notable changes to the **vf-clamp** VS Code extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] — 2026-06-17
+
+### Fixed
+- **Extension failed to load fonts** with `Cannot find package '@liiift-studio/vf-clamp'`.
+  The dependency was hidden from esbuild (via the `new Function('return import(p)')`
+  loader) so it was never bundled, while `.vscodeignore` excluded all of `node_modules/`
+  — so the runtime module shipped neither bundled nor on disk. The font runtime
+  (`@liiift-studio/vf-clamp` → `@web-alchemy/fonttools` → `pyodide`) cannot be bundled
+  (it loads WASM/Python assets from real files on disk), so it is now marked `external`
+  in esbuild and the production `node_modules` subtree ships in the VSIX (~15 MB).
+
+### Changed
+- Input now accepts web font formats. The file picker and the Explorer right-click
+  menu match `.ttf`, `.otf`, `.woff`, and `.woff2` — the core engine already reads all
+  four (fonttools decompresses WOFF/WOFF2 on read).
+
 ## [0.2.1] — 2026-06-11
 
 Hardening pass from the cross-apply deep-review.
