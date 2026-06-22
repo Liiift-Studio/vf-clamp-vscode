@@ -4,6 +4,20 @@ All notable changes to the **vf-clamp** VS Code extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] — 2026-06-22
+
+### Fixed
+- **Bundled `@liiift-studio/vf-clamp` core upgraded 2.0.1 → 2.1.4**, picking up the
+  upstream font-table fixes that were previously inherited as open issues. The VSIX
+  was still pinning core 2.0.1 despite the `^2.0.1` range, so these fixes were not
+  actually shipping. Now resolved in generated fonts:
+  - nameID 2 (Subfamily) reset to `Regular` and nameID 3 (Unique ID) regenerated;
+    nameID 4 (Full name) no longer hardcoded (#69).
+  - STAT Format 1/2/3/4 records and LinkedValue references that point at a pruned
+    axis are now removed/remapped (#70).
+  - OS/2 `usWeightClass`/`fsSelection` and `head.macStyle` updated to the new wght
+    default for ranged outputs (#71).
+
 ## [0.2.3] — 2026-06-22
 
 ### Fixed

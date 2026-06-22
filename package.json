@@ -2,16 +2,22 @@
 	"name": "vf-clamp",
 	"displayName": "vf-clamp — Variable Font Clamper",
 	"description": "Generate restricted variable fonts from named instance ranges",
-	"version": "0.2.3",
+	"version": "0.2.4",
 	"publisher": "overpunch",
 	"icon": "media/icon.png",
 	"engines": {
 		"vscode": "^1.85.0",
 		"node": ">=18"
 	},
-	"extensionKind": ["workspace"],
+	"extensionKind": [
+		"workspace"
+	],
 	"qna": false,
-	"categories": ["Other", "Visualization", "Formatters"],
+	"categories": [
+		"Other",
+		"Visualization",
+		"Formatters"
+	],
 	"keywords": [
 		"font",
 		"variable font",
@@ -73,7 +79,12 @@
 				},
 				"vf-clamp.defaultFormat": {
 					"type": "string",
-					"enum": ["ttf", "otf", "woff", "woff2"],
+					"enum": [
+						"ttf",
+						"otf",
+						"woff",
+						"woff2"
+					],
 					"default": "ttf",
 					"description": "Default output format for generated fonts."
 				},
@@ -107,7 +118,7 @@
 		"vsce-publish": "vsce publish"
 	},
 	"dependencies": {
-		"@liiift-studio/vf-clamp": "^2.0.1"
+		"@liiift-studio/vf-clamp": "^2.1.4"
 	},
 	"devDependencies": {
 		"@types/mocha": "^10.0.6",
