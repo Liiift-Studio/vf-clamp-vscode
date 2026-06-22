@@ -100,7 +100,7 @@
 		"package": "npm run preflight && npm run lint && npm run compile-tests && npm run test:unit && npm run clean && node esbuild.mjs --production",
 		"lint": "tsc --noEmit",
 		"test": "node ./dist/test/runTest.js",
-		"test:unit": "mocha --ui tdd ./dist/test/suite/messages.test.js ./dist/test/suite/security.test.js ./dist/test/suite/util.test.js ./dist/test/suite/panel-helpers.test.js",
+		"test:unit": "mocha --ui tdd ./dist/test/suite/messages.test.js ./dist/test/suite/security.test.js ./dist/test/suite/util.test.js ./dist/test/suite/panel-helpers.test.js ./dist/test/suite/webview-csp.test.js",
 		"pretest": "npm run compile-tests",
 		"compile-tests": "tsc -p ./tsconfig.test.json",
 		"vsce-package": "vsce package",

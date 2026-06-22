@@ -241,8 +241,8 @@
 				if (!isVariable) {
 					axesSummary.innerHTML = ''
 					instanceList.innerHTML = '<div class="empty-state">Not a variable font — no axes found.</div>'
-					sectionInstances.style.display = 'block'
-					sectionOutput.style.display = 'none'
+					sectionInstances.classList.add('is-visible')
+					sectionOutput.classList.remove('is-visible')
 					setStatus('This font has no variable axes. Select a variable font (.ttf/.otf).', 'error')
 					persist()
 					break
@@ -262,8 +262,8 @@
 				})
 
 				renderInstances(msg.instances)
-				sectionInstances.style.display = 'block'
-				sectionOutput.style.display = 'block'
+				sectionInstances.classList.add('is-visible')
+				sectionOutput.classList.add('is-visible')
 				setStatus('', 'info')
 				updateGenerateButton()
 				// Move focus into the instances section so screen readers announce it.
@@ -317,8 +317,8 @@
 				if (fontPathDisplay) fontPathDisplay.textContent = 'No font selected'
 				if (instanceList) instanceList.innerHTML = '<div class="empty-state">No instances loaded.</div>'
 				if (axesSummary) axesSummary.innerHTML = ''
-				if (sectionInstances) sectionInstances.style.display = 'none'
-				if (sectionOutput) sectionOutput.style.display = 'none'
+				if (sectionInstances) sectionInstances.classList.remove('is-visible')
+				if (sectionOutput) sectionOutput.classList.remove('is-visible')
 				setStatus('Reload detected — please re-pick your font and output folder.', 'info')
 				vscode.setState({})
 				updateGenerateButton()

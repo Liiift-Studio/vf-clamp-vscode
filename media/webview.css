@@ -209,8 +209,14 @@ select {
 	margin-top: 4px;
 }
 
+/* Sections are hidden by default and revealed by toggling the .is-visible class
+   from webview.js — never via inline style= mutation, which a strict CSP
+   style-src nonce would block. */
 #section-instances,
 #section-output { display: none; }
+
+#section-instances.is-visible,
+#section-output.is-visible { display: block; }
 
 .axes-summary {
 	margin-bottom: 10px;
