@@ -12,19 +12,20 @@ import {
 	type FontFormat,
 	type AxisInfo,
 	type InstanceInfo,
-	FORMAT_REGISTRY,
 	isIncomingMessage,
 } from './shared/messages.js'
 import { compactName } from './util.js'
 import { validateOutputName, resolveWithinRoot, sanitizeErrorMessage, safeBasename } from './security.js'
+import { formatTitle, extensionForResult } from './panel-helpers.js'
 import { getOutputChannel } from './extension.js'
+
+// Re-export the pure helpers so existing importers of './panel.js' keep working.
+export { formatTitle, extensionForResult }
 
 /** Minimum allowed processing timeout (ms), enforced even if user edits settings.json directly. */
 const MIN_TIMEOUT_MS = 5_000
 /** Maximum number of distinct font paths we will keep in the allow-list. */
 const MAX_ALLOWED_FONT_PATHS = 32
-/** Maximum length for the panel title font label before truncation. */
-const MAX_TITLE_FONT_CHARS = 60
 
 /** Shape of the @liiift-studio/vf-clamp ESM module we depend on. */
 interface VfClampModule {
@@ -74,23 +75,6 @@ type PanelState =
 	| { kind: 'idle' }
 	| { kind: 'fontLoaded'; fontPath: string }
 	| { kind: 'generating' }
-
-/** Format a font path into a panel title, truncating very long basenames. */
-export function formatTitle(fontPath: string): string {
-	const name = safeBasename(fontPath)
-	const trimmed = name.length > MAX_TITLE_FONT_CHARS
-		? name.slice(0, MAX_TITLE_FONT_CHARS - 1) + '…'
-		: name
-	return `vf-clamp · ${trimmed}`
-}
-
-/** Return the file extension for a result, falling back to the requested output format. */
-export function extensionForResult(resultFormat: string | undefined, requestedFormat: FontFormat): string {
-	if (resultFormat && resultFormat in FORMAT_REGISTRY) {
-		return FORMAT_REGISTRY[resultFormat as FontFormat].extension
-	}
-	return FORMAT_REGISTRY[requestedFormat].extension
-}
 
 /** Manages the vf-clamp webview panel. */
 export class VFClampPanel {
