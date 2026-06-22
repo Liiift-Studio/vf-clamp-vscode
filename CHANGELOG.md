@@ -4,6 +4,23 @@ All notable changes to the **vf-clamp** VS Code extension are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] — 2026-06-22
+
+### Fixed
+- **Missing unit-test file silently skipped.** `test:unit` referenced
+  `panel-helpers.test.js` which never existed, so `formatTitle` and
+  `extensionForResult` shipped with no coverage. The two pure helpers now live in
+  `src/panel-helpers.ts` (re-exported from `panel.ts`) and have a real test file
+  exercising long basenames, RTL characters, and format-extension fallback (#76).
+
+### Changed
+- **Webview section visibility is now class-driven, not inline-style-driven.** The
+  six `style.display` mutations on the instances/output sections are replaced with
+  `.is-visible` `classList` toggles so a strict CSP `style-src` nonce cannot block
+  them. A guard test (`webview-csp.test.js`) fails if inline style mutations return (#81).
+- **README** gained a *Try it live* section linking the [vfclamp.com](https://vfclamp.com)
+  interactive web demo, which runs the same core engine in the browser.
+
 ## [0.2.2] — 2026-06-17
 
 ### Fixed
