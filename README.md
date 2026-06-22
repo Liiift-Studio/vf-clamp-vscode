@@ -8,6 +8,13 @@ A customer who licenses "Light" and "Bold" receives a micro-VF spanning exactly 
 
 Powered by [`@liiift-studio/vf-clamp`](https://www.vfclamp.com) and Pyodide (fonttools running in WASM).
 
+## Try it live
+
+Want to see the engine before installing? **[vfclamp.com](https://vfclamp.com)** runs the same
+`@liiift-studio/vf-clamp` core in your browser — drop in a variable font, pick instances, and
+download the restricted output. The interactive web demo is the quickest way to understand what
+this extension does inside VS Code.
+
 ---
 
 ## Requirements
